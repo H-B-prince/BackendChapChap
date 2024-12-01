@@ -1,62 +1,61 @@
 import json
-import geopandas as gpd
-from shapely.geometry import Point
+import geojson
 import numpy as np
+from shapely.geometry import shape
+
+# Загрузка GeoJSON данных
+with open('../../map.geojson') as f:
+    data = geojson.load(f)
 
 
-def load_polygon(geojson_path):
-    gdf = gpd.read_file(geojson_path)
-    if gdf.crs is None:
-        gdf.set_crs(epsg=4326, inplace=True)
-    return gdf
+def generate_hex_grid(polygon, spacing):
+    """
+    Генерация шестиугольной сетки внутри заданного полигона.
 
+    :param polygon: `shapely.geometry.Polygon`, описывающий границы области.
+    :param spacing: Расстояние между точками в градусах широты, грубо.
+    :return: Список точек {"node_id", "latitude", "longitude"}.
+    """
+    from shapely.geometry import Point
 
-def generate_uniform_points(gdf, num_points, distance_m=67.5):
-    gdf_proj = gdf.to_crs(epsg=32633)
-    polygon = gdf_proj.union_all()
     minx, miny, maxx, maxy = polygon.bounds
-    x_coords = np.arange(minx, maxx, distance_m)
-    y_coords = np.arange(miny, maxy, distance_m)
-    points = []
-    for x in x_coords:
-        for y in y_coords:
+    dx = spacing * 3 / 2  # Горизонтальное смещение
+    dy = spacing * np.sqrt(3)  # Вертикальное смещение
+    points = []  # Список точек
+    node_id = 1  # Уникальный идентификатор узла
+    y = miny  # Начальная координата Y
+    offset = 0  # Сдвиг для четных/нечетных строк
+
+    while y <= maxy:
+        x = minx + dx * offset  # Смещаем стартовую X-координату для строк через одну
+        while x <= maxx:
             point = Point(x, y)
             if polygon.contains(point):
-                points.append(point)
-                if len(points) >= num_points:
-                    break
-        if len(points) >= num_points:
-            break
-    if len(points) < num_points:
-        raise ValueError(f"Не удалось сгенерировать требуемое количество точек. Сгенерировано: {len(points)}")
-    gdf_points = gpd.GeoDataFrame(geometry=points, crs=gdf_proj.crs)
-    gdf_points = gdf_points.to_crs(epsg=4326)
-    return gdf_points['geometry']
+                points.append({
+                    "node_id": node_id,
+                    "latitude": point.y,
+                    "longitude": point.x
+                })
+                node_id += 1
+            x += dx  # Переход к следующей точке по горизонтали
+        y += dy / 2  # Смещение на следующую строку
+        offset = 1 - offset  # Чередуем сдвиг (0 -> 1 -> 0)
+
+    return points
 
 
-def save_points_to_file(gdf_points, file_path='points.json'):
-    points = [{'node_id': idx + 1, 'latitude': point.y, 'longitude': point.x} for idx, point in enumerate(gdf_points)]
+# Извлечение полигона из данных
+polygon_data = data['features'][1]['geometry']
+polygon = shape(polygon_data)
 
-    with open(file_path, 'w', encoding='utf-8') as f:
-        json.dump(points, f, ensure_ascii=False, indent=4)
-    print(f"Точки успешно сохранены в файл: {file_path}")
+# Генерация точек с расстоянием 135 м
+spacing = 135 / 111320  # Преобразование метров в градусы широты (грубо)
 
+# Создание точек в шестиугольной сетке
+points = generate_hex_grid(polygon, spacing)
 
-def main():
-    geojson_path = '..//..//map.geojson'
-    num_points = 265
-    distance_m = 135
-    print("Загрузка полигона...")
-    gdf = load_polygon(geojson_path)
-    print("Генерация точек...")
-    try:
-        gdf_points = generate_uniform_points(gdf, num_points, distance_m)
-        print(f"Сгенерировано {len(gdf_points)} точек.")
-        print("Сохранение точек в файл...")
-        save_points_to_file(gdf_points)
-    except ValueError as ve:
-        print(ve)
+# Сохранение точек в JSON файл с красивым форматированием
+with open('points.json', 'w') as f:
+    json.dump(points, f, indent=4)
 
-
-if __name__ == "__main__":
-    main()
+print(f"Создано {len(points)} точек")
