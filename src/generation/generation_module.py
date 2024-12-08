@@ -1,47 +1,36 @@
-import json
 import pandas as pd
 import numpy as np
-import datetime
 import random
+import json
 
-# Определение сезонов и соответствующих температурных диапазонов
+
+# Генерация точек с расстоянием 135 м
+spacing = 135 / 111320  # Преобразование метров в градусы широты (грубо)
+
+
 SEASONS = {
-    'winter': {'start': (12, 1), 'end': (2, 28), 'temp_range': (-10, 5)},  # Температура в градусах Цельсия
+    'winter': {'start': (12, 1), 'end': (2, 28), 'temp_range': (-10, 5)},
     'spring': {'start': (3, 1), 'end': (5, 31), 'temp_range': (5, 20)},
     'summer': {'start': (6, 1), 'end': (8, 31), 'temp_range': (15, 35)},
     'autumn': {'start': (9, 1), 'end': (11, 30), 'temp_range': (5, 20)}
 }
 
-# Параметры температур при пожаре
-FIRE_TEMP_MIN = 300  # Минимальная температура пожара в °C
-FIRE_TEMP_MAX = 1000  # Максимальная температура пожара в °C
 
-
-def get_season(month, day):
-    for season, data in SEASONS.items():
-        start_month, start_day = data['start']
-        end_month, end_day = data['end']
-        # Используем произвольный год для сравнения
-        start = datetime.date(2000, start_month, start_day)
-        end = datetime.date(2000, end_month, end_day)
-        current = datetime.date(2000, month, day)
-        if start <= current <= end:
-            return season
-    return 'winter'  # По умолчанию зима
+def read_nodes():
+    with open('D:/Python/ChapChap/src/generation/points.json') as f:
+        return json.load(f)
 
 
 def generate_base_temperature(season):
-    return np.random.uniform(SEASONS[season]['temp_range'][0],
-                             SEASONS[season]['temp_range'][1])
+    return np.random.uniform(SEASONS[season]['temp_range'][0], SEASONS[season]['temp_range'][1])
 
 
 def generate_data_for_node(season, fire=False, fire_intensity=0):
     base_temp = generate_base_temperature(season)
-    base_humidity = np.random.uniform(40, 80)  # Влажность в %
-    base_oxygen = np.random.uniform(19.0, 21.0)  # Кислород в %
-    base_CO2 = np.random.uniform(300, 400)  # CO2 в ppm
+    base_humidity = np.random.uniform(40, 80)
+    base_oxygen = np.random.uniform(19.0, 21.0)
+    base_CO2 = np.random.uniform(300, 400)
 
-    # Если пожар, изменяем показатели
     if fire:
         temp = base_temp + fire_intensity * np.random.uniform(30, 50)
         humidity = base_humidity * (1 - fire_intensity * 0.5)
@@ -61,108 +50,134 @@ def generate_data_for_node(season, fire=False, fire_intensity=0):
     }
 
 
-def read_nodes():
-    with open('..//points.json', 'r', encoding='utf-8') as file:
-        data = json.load(file)
+def get_season(month, day):
+    # Определить сезон по месяцу и дню (пример)
+    if month in [12, 1, 2]:
+        return "winter"
+    elif month in [3, 4, 5]:
+        return "spring"
+    elif month in [6, 7, 8]:
+        return "summer"
+    else:
+        return "fall"
 
-        return data
+
+def find_neighbors(points, target_node):
+    neighbors = []
+    target_lat = target_node['latitude']
+    target_lon = target_node['longitude']
+
+    # Предполагаемые соседние точки (смещения для шестиугольной сетки)
+    dx = spacing * 3 / 2
+    dy = spacing * np.sqrt(3) / 2
+
+    potential_neighbors = [
+        (target_lon + dx, target_lat),  # Правый
+        (target_lon - dx, target_lat),  # Левый
+        (target_lon + dx / 2, target_lat + dy),  # Верхний правый
+        (target_lon - dx / 2, target_lat + dy),  # Верхний левый
+        (target_lon + dx / 2, target_lat - dy),  # Нижний правый
+        (target_lon - dx / 2, target_lat - dy),  # Нижний левый
+    ]
+    # Проходим по соседним позициям и сравниваем с точками
+    for neighbor in potential_neighbors:
+        for point in points:
+            # Проверяем, близка ли точка по широте и долготе и не является ли она самой собой
+            if np.isclose(point['longitude'], neighbor[0], atol=spacing / 2) and np.isclose(point['latitude'], neighbor[1], atol=spacing / 2) and (point['longitude'] != target_lon and point['latitude'] != target_lat):
+                neighbors.append(point)
+                break
+    return neighbors
 
 
-def generate_dataset(start_date="2024-01-01 00:00:00", end_date="2024-01-01 06:00:00", fire_details=None):
+async def generate_realtime_data():
+
+    fire_details = {}
+
+    current_datetime = pd.Timestamp.now()
+
     nodes = read_nodes()
-
     nodes_df = pd.DataFrame(nodes)
-    # Конвертируем сроки
-    start_datetime = pd.to_datetime(start_date)
-    print("Начало:", start_datetime)
 
-    end_datetime = pd.to_datetime(end_date)
-    print("Конец:", end_datetime)
+    while True:
+        season = get_season(current_datetime.month, current_datetime.day)
 
-    timestamps = pd.date_range(start=start_datetime, end=end_datetime, freq="s")
+        # Если fire_details пуст, создаём новый пожар
+        if not fire_details:
+            random_node = random.choice(nodes_df.to_dict('records'))
+            random_start_time = current_datetime + pd.Timedelta(minutes=0)
+            random_duration = 60  # Длительность в секундах
+            fire_details = {"start_time": random_start_time, "duration": random_duration,
+                            "start_node": random_node["node_id"]}
+            fire_intensity = 1
+            fire_start_times = pd.to_datetime([fire_details["start_time"]])
+            fire_durations = [fire_details["duration"]]
+            fire_start_nodes = [int(fire_details["start_node"])]
+            fire_end_times = {node: (fire_start_times[i] + pd.Timedelta(seconds=fire_durations[i])) for i, node in
+                              enumerate(fire_start_nodes)}
+            fire_active_nodes = set()
 
-    # Подготовка хранения результатов
-    data = {
-        "timestamp": [],
-        "node_id": [],
-        "latitude": [],
-        "longitude": [],
-        "temperature": [],
-        "humidity": [],
-        "oxygen": [],
-        "CO2": [],
-        "fire": [],
-    }
+            # Изначально добавляем узлы, где пожар должен начаться в текущее время
+            for i, start_time in enumerate(fire_start_times):
+                if current_datetime >= start_time:
+                    fire_active_nodes.add(fire_start_nodes[i])
+                    fire_end_times[fire_start_nodes[i]] = fire_start_times[i] + pd.Timedelta(seconds=fire_durations[i])
 
-    # Настройки пожара
-    fire_start = pd.to_datetime(fire_details["start_time"])  # Временное начало пожара
-    fire_duration = fire_details["duration"] * 60  # Длительность пожара (в секундах)
-    fire_start_node = fire_details["start_node"]  # Узел начала пожара
+        # Проверяем завершение пожара
+        for node_id, end_time in list(fire_end_times.items()):
+            current_datetime = pd.Timestamp.now()
+            if current_datetime >= end_time:
+                fire_active_nodes.discard(node_id)
+                del fire_end_times[node_id]
 
-    fire_active_nodes = set([fire_start_node])  # Узлы, где происходит пожар
-    time_elapsed = 0  # Прошедшее время с начала пожара
+        # Очищаем fire_details и fire_active_nodes, если пожар завершился
+        if not fire_end_times:
+            fire_details = {}
+            fire_active_nodes = set()
 
-    # Запуск симуляции
-    for ts in timestamps:
-        print(ts)
-        season = get_season(ts.month, ts.day)
+        # Обновляем узлы с активным пожаром и добавляем их соседей
+        new_active_nodes = set()
+        for node_id in list(fire_active_nodes):  # Используем list(fire_active_nodes) для итерации по копии множества
+            if current_datetime < fire_end_times.get(node_id, current_datetime):
+                node = nodes_df[nodes_df["node_id"] == node_id].iloc[0]
+                neighbors = find_neighbors(nodes_df.to_dict('records'), node)
+
+                # Берём 75% случайных соседей
+                num_neighbors_to_select = int(len(neighbors) * 0.75)  # 75% от общего количества соседей
+                random_neighbors = random.sample(neighbors, num_neighbors_to_select)
+
+                for neighbor in random_neighbors:  # Итерация только по случайным соседям
+                    neighbor_id = neighbor['node_id']
+                    if neighbor_id not in fire_active_nodes and neighbor_id not in new_active_nodes:
+                        new_active_nodes.add(neighbor_id)
+                        fire_end_times[neighbor_id] = fire_end_times[node_id] + pd.Timedelta(
+                            seconds=2)  # Указываем тайминг
+
+        fire_active_nodes.update(new_active_nodes)
+        fire_active_nodes = {node for node in fire_active_nodes if
+                             current_datetime < fire_end_times.get(node, current_datetime)}
+
+        data = []
 
         for _, node in nodes_df.iterrows():
-            fire = False
-            fire_intensity = 0
-
-            # Определяем, есть ли пожар в этом узле
-            if ts >= fire_start and node["node_id"] in fire_active_nodes:
-                fire = True
-                fire_intensity = 1 - (time_elapsed / fire_duration)
-                fire_intensity = max(fire_intensity, 0)  # Интенсивность пожара не может быть < 0
-
-            # Генерация данных для каждого узла
+            node_id = int(node["node_id"])
+            fire = node_id in fire_active_nodes
             sensor_data = generate_data_for_node(season, fire, fire_intensity)
-            data["timestamp"].append(ts)
-            data["node_id"].append(node["node_id"])
-            data["latitude"].append(node["latitude"])
-            data["longitude"].append(node["longitude"])
-            data["temperature"].append(sensor_data["temperature"])
-            data["humidity"].append(sensor_data["humidity"])
-            data["oxygen"].append(sensor_data["oxygen"])
-            data["CO2"].append(sensor_data["CO2"])
-            data["fire"].append(1 if fire else 0)
+            sensor_data["node_id"] = node_id
+            sensor_data["timestamp"] = current_datetime
+            sensor_data["node_y"] = node["latitude"]
+            sensor_data["node_x"] = node["longitude"]
+            sensor_data["fire"] = 1 if fire else 0
 
-            # Увеличиваем набор охваченных пожаром узлов каждые 30 секунд
-            if fire and time_elapsed % 30 == 0:
-                for _, neighbor in nodes_df.iterrows():
-                    if (
-                            abs(neighbor["latitude"] - node["latitude"]) <= 0.001
-                            and abs(neighbor["longitude"] - node["longitude"]) <= 0.001
-                    ):
-                        fire_active_nodes.add(neighbor["node_id"])
+            data.append(sensor_data)
 
-        # Увеличиваем время пожара
-        if ts >= fire_start:
-            time_elapsed += 1
-            # Завершаем пожар, если время вышло
-            if time_elapsed > fire_duration:
-                fire_active_nodes.clear()
-
-    # Возвращаем результирующий DataFrame
-    return pd.DataFrame(data)
-
-# Пример вызова
-fire_details = {
-    "start_time": "2024-11-23 10:01:00",  # Начало пожара
-    "duration": 5,  # Длительность в минутах
-    "start_node": 125,  # Узел, с которого начнется пожар
-}
+        df = pd.DataFrame(data)
+        yield df
+        current_datetime += pd.Timedelta(seconds=1)
 
 
-def main():
-    output_file = 'fire_dataset.csv'
 
-    result = generate_dataset(start_date="2024-11-23 10:00:00", end_date="2024-11-23 10:07:00", fire_details=fire_details)
 
-    # Сохранение данных в CSV
-    result.to_csv(output_file, index=False, encoding="utf-8")
 
-if __name__ == "__main__":
-    main()
+
+
+
