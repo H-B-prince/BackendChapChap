@@ -39,6 +39,7 @@
 
 Чтобы сгенерировать коориднаты узлов:
    
-   cd generation
+   cd src/generation
 
    seed_points.py
+   
